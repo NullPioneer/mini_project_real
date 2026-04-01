@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+opencv-python
+numpy
+deep-translator
+httpx
+python-multipart
+Pillow
+gtts
