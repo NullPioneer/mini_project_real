@@ -1,0 +1,35 @@
+# Python virtual environment
+Dot_AI/backend/venv/
+venv/
+
+# Python cache files
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Backup / test repository copies
+Dot_AI_repo/
+
+# IDE configurations
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary analyze logs & backup files in flutter app
+Dot_AI/flutter_app/analyze*.txt
+Dot_AI/flutter_app/check_local.txt
+Dot_AI/flutter_app/final_analyze.txt
+Dot_AI/flutter_app/old_home.dart
+Dot_AI/backend/debug_input.png
+Dot_AI/backend/debug_thresh.png
+
+
+# Build / dependency folders
+Dot_AI/flutter_app/.dart_tool/
+Dot_AI/flutter_app/build/
+Dot_AI/flutter_app/.flutter-plugins
+Dot_AI/flutter_app/.flutter-plugins-dependencies
+Dot_AI/flutter_app/local.properties

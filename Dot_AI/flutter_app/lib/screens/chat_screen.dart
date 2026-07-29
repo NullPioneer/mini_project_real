@@ -6,14 +6,16 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../models/chat_message.dart';
 import '../widgets/dot_loader.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_indicator.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'dart:io' show File;
+import '../services/chat_storage.dart';
+import '../widgets/chat_drawer.dart';
 
 class ChatScreen extends StatefulWidget {
   final String extractedText;
@@ -29,19 +31,53 @@ class _ChatScreenState extends State<ChatScreen>
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final AudioPlayer _audioPlayer = AudioPlayer();
-  final SpeechToText _speechToText = SpeechToText();
+  final stt.SpeechToText _speech = stt.SpeechToText();
 
   final List<ChatMessage> _messages = [];
   bool _isGenerating = false;
   bool _isListening = false;
-  bool _speechAvailable = false;
 
   final List<Map<String, String>> _conversationHistory = [];
+
+  String get _sessionId => ChatStorageService.generateId(widget.extractedText);
 
   @override
   void initState() {
     super.initState();
-    _addWelcomeMessage();
+    _loadSession();
+  }
+
+  Future<void> _loadSession() async {
+    final sessions = await ChatStorageService.getSessions();
+    if (sessions.containsKey(_sessionId)) {
+      final session = sessions[_sessionId]!;
+      setState(() {
+        _messages.addAll(session.messages);
+        _conversationHistory.addAll(session.history);
+      });
+      _scrollToBottom();
+    } else {
+      setState(() {
+        _addWelcomeMessage();
+      });
+      _saveSession();
+    }
+  }
+
+  Future<void> _saveSession() async {
+    final title = widget.extractedText.length > 20 
+        ? '${widget.extractedText.substring(0, 20)}...' 
+        : widget.extractedText;
+
+    final session = ChatSession(
+      id: _sessionId,
+      title: title.isEmpty ? 'Braille Image' : title,
+      extractedText: widget.extractedText,
+      messages: _messages,
+      history: _conversationHistory,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+    await ChatStorageService.saveSession(session);
   }
 
   @override
@@ -50,19 +86,6 @@ class _ChatScreenState extends State<ChatScreen>
     _scrollController.dispose();
     _audioPlayer.dispose();
     super.dispose();
-  }
-
-  Future<void> _initSpeech() async {
-    try {
-      _speechAvailable = await _speechToText.initialize(
-        onError: (error) {
-          if (mounted) setState(() => _isListening = false);
-        },
-      );
-    } catch (_) {
-      _speechAvailable = false;
-    }
-    if (mounted) setState(() {});
   }
 
   void _addWelcomeMessage() {
@@ -77,8 +100,46 @@ class _ChatScreenState extends State<ChatScreen>
     ));
   }
 
-  Future<void> _sendMessage({String? voiceText}) async {
-    final text = voiceText ?? _inputController.text.trim();
+  Future<void> _listen() async {
+    if (!_isListening) {
+      try {
+        bool available = await _speech.initialize(
+          onStatus: (val) {
+            if (val == 'done' || val == 'notListening') {
+              if (mounted) setState(() => _isListening = false);
+            }
+          },
+          onError: (val) {
+             if (mounted) setState(() => _isListening = false);
+          },
+        );
+        if (available) {
+          setState(() => _isListening = true);
+          _speech.listen(
+            onResult: (val) => setState(() {
+              _inputController.text = val.recognizedWords;
+            }),
+          );
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _isListening = false);
+        // Silently fails on Windows Desktop avoiding full crash
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Speech recognition is not fully supported on this OS.'),
+            backgroundColor: AppTheme.errorColor,
+          ),
+        );
+      }
+    } else {
+      setState(() => _isListening = false);
+      _speech.stop();
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _inputController.text.trim();
     if (text.isEmpty || _isGenerating) return;
 
     _inputController.clear();
@@ -103,6 +164,7 @@ class _ChatScreenState extends State<ChatScreen>
       _messages.add(loadingMessage);
       _isGenerating = true;
     });
+    _saveSession();
 
     _scrollToBottom();
 
@@ -149,6 +211,7 @@ class _ChatScreenState extends State<ChatScreen>
       });
     }
 
+    _saveSession();
     _scrollToBottom();
   }
 
@@ -169,55 +232,55 @@ class _ChatScreenState extends State<ChatScreen>
     } catch (_) {}
   }
 
-  Future<void> _toggleVoiceInput() async {
-    if (!_speechAvailable) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Initializing microphone...')),
-      );
-      try {
-        _speechAvailable = await _speechToText.initialize(
-          onError: (error) {
-            if (mounted) setState(() => _isListening = false);
-          },
-        );
-      } catch (_) {
-        _speechAvailable = false;
+  void _regenerateChat(int aiIndex) {
+    if (_isGenerating || aiIndex <= 0) return;
+    
+    // The previous message should ideally be the user's message
+    final userMessage = _messages[aiIndex - 1];
+    if (!userMessage.isUser) return;
+    
+    final prompt = userMessage.content;
+    
+    setState(() {
+      // Remove the AI message and the User message
+      _messages.removeAt(aiIndex);
+      _messages.removeAt(aiIndex - 1);
+      
+      // Pop the last 2 entries from history to maintain strict consistency
+      if (_conversationHistory.length >= 2) {
+        _conversationHistory.removeRange(_conversationHistory.length - 2, _conversationHistory.length);
       }
-      if (!_speechAvailable) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Speech recognition completely disabled / not supported on your OS.')),
-        );
-        return;
-      }
-    }
+    });
 
-    if (_isListening) {
-      await _speechToText.stop();
-      setState(() => _isListening = false);
-    } else {
-      setState(() => _isListening = true);
-      await _speechToText.listen(
-        onResult: (result) {
-          if (result.finalResult) {
-            final recognized = result.recognizedWords;
-            setState(() => _isListening = false);
-            if (recognized.isNotEmpty) _sendMessage(voiceText: recognized);
-          } else {
-            setState(() {
-              _inputController.text = result.recognizedWords;
-              _inputController.selection = TextSelection.fromPosition(
-                TextPosition(offset: _inputController.text.length),
-              );
-            });
-          }
-        },
-        listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 3),
-      );
-    }
+    _saveSession();
+    _inputController.text = prompt;
+    _sendMessage();
+  }
+
+  void _editChat(int userIndex) {
+    if (_isGenerating || userIndex < 0 || userIndex >= _messages.length) return;
+    
+    final userMessage = _messages[userIndex];
+    if (!userMessage.isUser) return;
+    
+    final prompt = userMessage.content;
+    
+    setState(() {
+      // Remove this message and all subsequent messages to "rewind" the chat context securely
+      _messages.removeRange(userIndex, _messages.length);
+      
+      // Rebuild the history strictly from the remaining successful messages
+      _conversationHistory.clear();
+      for (var msg in _messages) {
+        if (msg.role == MessageRole.user) {
+          _conversationHistory.add({'role': 'user', 'content': msg.content});
+        } else if (msg.role == MessageRole.ai && !msg.isLoading && msg.id != _messages.first.id) {
+          _conversationHistory.add({'role': 'assistant', 'content': msg.content});
+        }
+      }
+    });
+
+    _inputController.text = prompt;
   }
 
   void _scrollToBottom() {
@@ -253,6 +316,7 @@ class _ChatScreenState extends State<ChatScreen>
                 _conversationHistory.clear();
                 _addWelcomeMessage();
               });
+              _saveSession();
             },
             child: const Text('Clear',
                 style: TextStyle(color: AppTheme.errorColor)),
@@ -266,6 +330,7 @@ class _ChatScreenState extends State<ChatScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.backgroundDark,
+      endDrawer: const ChatHistoryDrawer(),
       appBar: _buildAppBar(),
       body: Column(
         children: [
@@ -292,24 +357,25 @@ class _ChatScreenState extends State<ChatScreen>
             width: 38,
             height: 38,
             decoration: BoxDecoration(
-              gradient: AppTheme.primaryGradient,
+              color: AppTheme.accentNeon.withValues(alpha: 0.1),
+              border: Border.all(color: AppTheme.accentNeon, width: 1.5),
               shape: BoxShape.circle,
             ),
             child: const Center(
               child:
-                  Text('⠿', style: TextStyle(fontSize: 18, color: Colors.white)),
+                  Text('⠿', style: TextStyle(fontSize: 18, color: AppTheme.accentNeon)),
             ),
           ),
           const SizedBox(width: 10),
           const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Dot_AI',
+               Text('Dot_AI',
                   style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                       color: AppTheme.textPrimary)),
-              Text('Braille Assistant',
+               Text('Braille Assistant',
                   style:
                       TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
             ],
@@ -317,10 +383,18 @@ class _ChatScreenState extends State<ChatScreen>
         ],
       ),
       actions: [
+        Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.history_rounded, color: AppTheme.textSecondary, size: 22),
+            onPressed: () => Scaffold.of(context).openEndDrawer(),
+            tooltip: 'Chat History',
+          ),
+        ),
         IconButton(
           icon: const Icon(Icons.delete_outline_rounded,
               color: AppTheme.textSecondary, size: 22),
           onPressed: _clearChat,
+          tooltip: 'Clear Current Chat',
         ),
         const SizedBox(width: 8),
       ],
@@ -334,11 +408,14 @@ class _ChatScreenState extends State<ChatScreen>
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      color: AppTheme.primaryColor.withOpacity(0.08),
+      decoration: const BoxDecoration(
+        color: AppTheme.surfaceDark,
+        border: Border(bottom: BorderSide(color: AppTheme.surfaceLight, width: 1)),
+      ),
       child: Row(
         children: [
           const Icon(Icons.text_snippet_rounded,
-              color: AppTheme.primaryLight, size: 16),
+              color: AppTheme.accentNeon, size: 16),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -376,6 +453,12 @@ class _ChatScreenState extends State<ChatScreen>
           child: ChatBubble(
             message: message,
             onPlayAudio: () => _playAudioResponse(message.content),
+            onRedo: (!message.isUser && index > 0 && message.id != _messages.first.id)
+                ? () => _regenerateChat(index)
+                : null,
+            onEdit: (message.isUser)
+                ? () => _editChat(index)
+                : null,
           ),
         );
       },
@@ -389,7 +472,7 @@ class _ChatScreenState extends State<ChatScreen>
       decoration: BoxDecoration(
         color: AppTheme.surfaceDark,
         border: Border(
-            top: BorderSide(color: AppTheme.surfaceLight.withOpacity(0.5))),
+            top: BorderSide(color: AppTheme.surfaceLight.withValues(alpha: 0.5))),
       ),
       child: Row(
         children: [
@@ -399,70 +482,61 @@ class _ChatScreenState extends State<ChatScreen>
                 color: AppTheme.backgroundDark,
                 borderRadius: BorderRadius.circular(28),
                 border: Border.all(
-                  color: _isListening
-                      ? AppTheme.errorColor.withOpacity(0.5)
-                      : AppTheme.surfaceLight,
+                  color: AppTheme.surfaceLight,
                 ),
               ),
-              child: Row(
-                children: [
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: TextField(
-                      controller: _inputController,
-                      style: const TextStyle(
-                          color: AppTheme.textPrimary, fontSize: 14),
-                      decoration: InputDecoration(
-                        hintText: _isListening
-                            ? 'Listening...'
-                            : 'Ask about the Braille text...',
-                        hintStyle: TextStyle(
-                          color: _isListening
-                              ? AppTheme.errorColor
-                              : AppTheme.textSecondary,
-                          fontSize: 14,
-                        ),
-                        border: InputBorder.none,
-                        isDense: true,
-                        contentPadding:
-                            const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                      maxLines: 4,
-                      minLines: 1,
-                      textCapitalization: TextCapitalization.sentences,
-                      onSubmitted: (_) => _sendMessage(),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: TextField(
+                  controller: _inputController,
+                  style: const TextStyle(
+                      color: AppTheme.textPrimary, fontSize: 14),
+                  decoration: const InputDecoration(
+                    hintText: 'Ask about the Braille text...',
+                    hintStyle: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 14,
                     ),
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding:
+                        EdgeInsets.symmetric(vertical: 14),
                   ),
-                  GestureDetector(
-                    onTap: _toggleVoiceInput,
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: _isListening
-                              ? AppTheme.errorColor.withOpacity(0.2)
-                              : Colors.transparent,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          _isListening
-                              ? Icons.mic_rounded
-                              : Icons.mic_none_rounded,
-                          color: _isListening
-                              ? AppTheme.errorColor
-                              : AppTheme.textSecondary,
-                          size: 22,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                  maxLines: 4,
+                  minLines: 1,
+                  textCapitalization: TextCapitalization.sentences,
+                  onSubmitted: (_) => _sendMessage(),
+                ),
               ),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
+          
+          // Microphone Button
+          GestureDetector(
+            onTap: _listen,
+            child: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: _isListening ? AppTheme.errorColor.withValues(alpha: 0.2) : AppTheme.surfaceDark,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: _isListening ? AppTheme.errorColor : AppTheme.surfaceLight,
+                ),
+              ),
+              child: Center(
+                child: Icon(
+                  _isListening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                  color: _isListening ? AppTheme.errorColor : AppTheme.textSecondary,
+                  size: 22,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+
+          // Send Button
           GestureDetector(
             onTap: _isGenerating ? null : _sendMessage,
             child: AnimatedContainer(
@@ -470,14 +544,14 @@ class _ChatScreenState extends State<ChatScreen>
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                gradient: _isGenerating ? null : AppTheme.primaryGradient,
+                gradient: _isGenerating ? null : AppTheme.neonGradient,
                 color: _isGenerating ? AppTheme.surfaceLight : null,
                 shape: BoxShape.circle,
                 boxShadow: _isGenerating
                     ? null
                     : [
                         BoxShadow(
-                          color: AppTheme.primaryColor.withOpacity(0.4),
+                          color: AppTheme.accentNeon.withValues(alpha: 0.4),
                           blurRadius: 12,
                           offset: const Offset(0, 4),
                         ),
@@ -485,10 +559,9 @@ class _ChatScreenState extends State<ChatScreen>
               ),
               child: Center(
                 child: _isGenerating
-                    ? const Padding(
-                        padding: EdgeInsets.all(14), child: DotLoader())
+                    ? const DotLoader()
                     : const Icon(Icons.send_rounded,
-                        color: Colors.white, size: 20),
+                        color: Colors.black, size: 20),
               ),
             ),
           ),

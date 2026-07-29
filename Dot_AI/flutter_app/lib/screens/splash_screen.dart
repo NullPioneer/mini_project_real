@@ -123,13 +123,13 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   void _startNavigationTimer() {
-    // Navigate to home after 3.5 seconds
-    Future.delayed(const Duration(milliseconds: 3500), () {
+    // Navigate to home after 6 seconds
+    Future.delayed(const Duration(milliseconds: 6000), () {
       if (mounted) {
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
-            pageBuilder: (_, __, ___) => const HomeScreen(),
-            transitionsBuilder: (_, animation, __, child) {
+            pageBuilder: (context, animation, secondaryAnimation) => const HomeScreen(),
+            transitionsBuilder: (context, animation, secondaryAnimation, child) {
               return FadeTransition(opacity: animation, child: child);
             },
             transitionDuration: const Duration(milliseconds: 600),
@@ -159,9 +159,9 @@ class _SplashScreenState extends State<SplashScreen>
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              Color(0xFF0A0E21),
-              Color(0xFF1A1040),
-              Color(0xFF0D1B3E),
+              AppTheme.backgroundDark,
+              Color(0xFF16161A),
+              AppTheme.backgroundDark,
             ],
           ),
         ),
@@ -244,21 +244,17 @@ class _SplashScreenState extends State<SplashScreen>
               height: 120,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: const LinearGradient(
+                gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [AppTheme.primaryColor, AppTheme.accentColor],
+                  colors: [AppTheme.surfaceLight, AppTheme.surfaceDark],
                 ),
+                border: Border.all(color: AppTheme.accentNeon, width: 1.5),
                 boxShadow: [
                   BoxShadow(
-                    color: AppTheme.primaryColor.withOpacity(0.5),
-                    blurRadius: 40,
-                    spreadRadius: 10,
-                  ),
-                  BoxShadow(
-                    color: AppTheme.accentColor.withOpacity(0.3),
-                    blurRadius: 60,
-                    spreadRadius: 5,
+                    color: AppTheme.accentNeon.withValues(alpha: 0.3),
+                    blurRadius: 30,
+                    spreadRadius: 2,
                   ),
                 ],
               ),
@@ -267,7 +263,7 @@ class _SplashScreenState extends State<SplashScreen>
                   '⠿',  // Braille symbol
                   style: TextStyle(
                     fontSize: 52,
-                    color: Colors.white,
+                    color: AppTheme.accentNeon,
                   ),
                 ),
               ),
@@ -284,9 +280,7 @@ class _SplashScreenState extends State<SplashScreen>
       child: SlideTransition(
         position: _titleSlide,
         child: ShaderMask(
-          shaderCallback: (bounds) => const LinearGradient(
-            colors: [AppTheme.primaryLight, AppTheme.accentColor],
-          ).createShader(bounds),
+          shaderCallback: (bounds) => AppTheme.neonGradient.createShader(bounds),
           child: const Text(
             'Dot_AI',
             style: TextStyle(
@@ -328,7 +322,7 @@ class _SplashScreenState extends State<SplashScreen>
         child: LinearProgressIndicator(
           backgroundColor: AppTheme.surfaceLight,
           valueColor: AlwaysStoppedAnimation<Color>(
-            AppTheme.primaryColor.withOpacity(0.8),
+            AppTheme.primaryColor.withValues(alpha: 0.8),
           ),
           borderRadius: BorderRadius.circular(2),
         ),
@@ -360,7 +354,7 @@ class _ParticlePainter extends CustomPainter {
     for (int i = 0; i < positions.length; i++) {
       final offset = positions[i];
       final opacity = (math.sin(angle + i * 0.8) + 1) / 2 * 0.15;
-      paint.color = const Color(0xFF6C63FF).withOpacity(opacity);
+      paint.color = AppTheme.accentNeon.withValues(alpha: opacity);
 
       // Draw a small Braille cell pattern
       for (int row = 0; row < 3; row++) {

@@ -44,6 +44,9 @@ dependencies:
   path: ^1.8.3
   permission_handler: ^11.1.0
   http_parser: ^4.0.2
+  file_picker: ^10.3.10
+  shared_preferences: ^2.5.5
+  crypto: ^3.0.7
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -54,6 +57,12 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: "^0.13.1"
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_logo.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

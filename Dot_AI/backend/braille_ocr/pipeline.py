@@ -14,12 +14,12 @@ braille_map = {
     "⠥": "u", "⠧": "v", "⠺": "w", "⠭": "x", "⠽": "y", "⠵": "z",
     "⠀": " ",
     "⠂": ",", "⠲": ".", "⠖": "!", "⠦": "?", "⠤": "-", "⠄": "'", "⠶": "\"", "⠜": "\"",
-    "⠼": "#" 
+    "⠼": "#", "⠠": "", "⠆": ";", "⠒": ":"
 }
-
 def translate_braille(text):
     result = ""
     is_number = False
+    is_capital = False
     
     num_map = {
         "⠁": "1", "⠃": "2", "⠉": "3", "⠙": "4", "⠑": "5", 
@@ -30,16 +30,27 @@ def translate_braille(text):
         if c == "⠼":
             is_number = True
             continue
+        elif c == "⠠":
+            is_capital = True
+            continue
         elif c == "⠀" or c == " ":
             is_number = False
             result += " "
+            continue
+        elif c == "\n":
+            is_number = False
+            result += "\n"
             continue
             
         if is_number and c in num_map:
             result += num_map[c]
         else:
             is_number = False
-            result += braille_map.get(c, "")
+            char = braille_map.get(c, "")
+            if is_capital and char.isalpha():
+                char = char.upper()
+                is_capital = False
+            result += char
             
     return result
 
@@ -58,15 +69,26 @@ def process_numpy_image(img: np.ndarray) -> str:
         
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
+    # Add white padding to prevent adaptive threshold from destroying dots near borders
+    pad = 30
+    gray = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
+    
     # 0. Blurry Image Recovery (Sharpening Convolution filter)
     kernel_sharpen = np.array([[0, -1, 0],
                                [-1, 5.5, -1],
                                [0, -1, 0]])
     gray = cv2.filter2D(gray, -1, kernel_sharpen)
     
-    # 1. Full Page Adaptive Thresholding
+    # 1. Full Page / Crop Adaptive Thresholding (Scale Invariant)
+    min_dim = min(img.shape[0], img.shape[1])
+    # Assume a dot diameter is at max 10% of the image size in a tight crop, 
+    # but keep a minimum of 21 for large pages
+    block_size = max(21, int(min_dim * 0.10))
+    if block_size % 2 == 0:
+        block_size += 1
+        
     thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 21, 2)
+                                   cv2.THRESH_BINARY_INV, block_size, 2)
                                    
     kernel = np.ones((2,2), np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
@@ -75,53 +97,107 @@ def process_numpy_image(img: np.ndarray) -> str:
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     dots = []
     
+    # Calculate dynamic max dot area:
+    # On full pages, it's typically <500, but on crops it can be up to 5% of total area
+    max_dot_area = max(500, (img.shape[0] * img.shape[1]) * 0.05)
+    print(f"📊 Process Image: size={img.shape}, min_dim={min_dim}, block_size={block_size}, max_dot_area={max_dot_area}")
+    
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if 8 < area < 500:  
-            M = cv2.moments(cnt)
-            if M['m00'] != 0:
-                cx = int(M['m10']/M['m00'])
-                cy = int(M['m01']/M['m00'])
-                if cx > 2 and cy > 2 and cx < img.shape[1] - 2 and cy < img.shape[0] - 2:
-                    dots.append((cx, cy))
+        if 8 < area < max_dot_area:
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect_ratio = float(w)/h
+            # Filter out extreme streaks - Braille dots are roughly circular or oval (aspect ratio relaxed to 0.3-3.0)
+            if 0.3 < aspect_ratio < 3.0:
+                M = cv2.moments(cnt)
+                if M['m00'] != 0:
+                    cx = int(M['m10']/M['m00']) - pad
+                    cy = int(M['m01']/M['m00']) - pad
+                    if cx > -pad and cy > -pad and cx < img.shape[1] + pad and cy < img.shape[0] + pad:
+                        dots.append((cx, cy))
                 
+    print(f"✅ Found {len(dots)} dots after size/aspect ratio filtering")
+    try:
+        cv2.imwrite("debug_input.png", img)
+        cv2.imwrite("debug_thresh.png", thresh)
+    except:
+        pass
     if not dots:
         print("❌ No dots found.")
         return ""
         
-    # 2.5 Mathemtical Deskewing (Tilt Correction)
+    # 2.5 Mathemtical Deskewing (Tilt Correction) - Robust Angle Detection
     if len(dots) > 10:
         pts = np.array(dots)
-        rect = cv2.minAreaRect(pts)
-        angle = rect[-1]
         
-        if angle > 45:
-            angle = angle - 90
-        elif angle < -45:
-            angle = 90 + angle
+        # Calculate local angles between points to find true rotation of the grid
+        if len(pts) > 1500:
+            idx = np.random.choice(len(pts), 1500, replace=False)
+            pts_sample = pts[idx]
+        else:
+            pts_sample = pts
             
-        c, s = np.cos(np.radians(angle)), np.sin(np.radians(angle))
-        mean_x, mean_y = np.mean(pts[:, 0]), np.mean(pts[:, 1])
+        diff = pts_sample[:, None] - pts_sample
+        dist = np.linalg.norm(diff, axis=-1)
         
-        rotated_dots = []
-        for (x, y) in dots:
-            x_m, y_m = x - mean_x, y - mean_y
-            new_x = x_m * c - y_m * s + mean_x
-            new_y = x_m * s + y_m * c + mean_y
-            rotated_dots.append((new_x, new_y))
-        dots = rotated_dots
+        # Find median nearest neighbor for deskew scale
+        nn_dist = np.partition(dist, 1, axis=-1)[:, 1]
+        temp_nn = np.median(nn_dist)
+        
+        if temp_nn > 2:
+            mask = (dist > 0.5 * temp_nn) & (dist < 3.0 * temp_nn)
+            dy = diff[..., 1][mask]
+            dx = diff[..., 0][mask]
+            
+            angles = np.degrees(np.arctan2(dy, dx))
+            # Normalize angles to [-90, 90]
+            angles = (angles + 90) % 180 - 90
+            
+            # Text is usually somewhat horizontal.
+            horiz_angles = angles[(angles > -20) & (angles < 20)]
+            if len(horiz_angles) > 10:
+                counts, bins = np.histogram(horiz_angles, bins=np.arange(-20, 20, 0.5))
+                angle = (bins[np.argmax(counts)] + bins[np.argmax(counts)+1]) / 2.0
+            else:
+                angle = 0.0
+        else:
+            angle = 0.0
+            
+        if abs(angle) > 0.5:
+            c, s = np.cos(np.radians(angle)), np.sin(np.radians(angle))
+            mean_x, mean_y = np.mean(pts[:, 0]), np.mean(pts[:, 1])
+            
+            rotated_dots = []
+            for (dx, dy) in dots:
+                x_m, y_m = dx - mean_x, dy - mean_y
+                # Apply anti-rotation
+                new_x = x_m * c + y_m * s + mean_x
+                new_y = -x_m * s + y_m * c + mean_y
+                rotated_dots.append((new_x, new_y))
+            dots = rotated_dots
         
     if len(dots) < 2:
+        print(f"❌ Less than 2 dots found ({len(dots)}). Aborting.")
         return ""
         
     # Scale Invariance Core Function
     pts = np.array(dots)
-    diff = pts[:, None] - pts
-    dist = np.sum(diff**2, axis=-1)**0.5
-    nn_dist = np.partition(dist, 1, axis=-1)[:, 1]
-    median_nn = np.median(nn_dist)
+    
+    # Prevent O(N^2) memory crash for noisy images with > 2500 dots (e.g. phone photos)
+    if len(pts) > 2500:
+        print(f"⚠️ Warning: Too many dots detected ({len(pts)}). Activating fast fallback.")
+        median_nn = int(img.shape[0] * 0.015)
+    else:
+        diff = pts[:, None] - pts
+        dist = np.sum(diff**2, axis=-1)**0.5
+        nn_dist = np.partition(dist, 1, axis=-1)[:, 1]
+        median_nn = np.median(nn_dist)
+        
     if median_nn < 5:
+        print(f"⚠️ Warning: median_nn {median_nn} is too small. Falling back to 14")
         median_nn = 14 # Safety Fallback
+        
+    print(f"📏 Computed median_nn = {median_nn}")
         
     # 3. Cluster Dots into Lines (Y-Axis)
     dots.sort(key=lambda d: d[1])
@@ -184,75 +260,99 @@ def process_numpy_image(img: np.ndarray) -> str:
                 current_cell = [dot]
         cells.append(current_cell)
         
+        # 1. Estimate CHAR_PITCH (distance between two cells in the SAME word)
         pitches = []
         for i in range(len(cells) - 1):
             dist = cells[i+1][0][0] - cells[i][0][0]
-            if median_nn * 2.0 < dist < median_nn * 3.5:
+            # Standard Braille spacing: cell pitch is roughly 2.5x point pitch
+            if median_nn * 1.8 < dist < median_nn * 3.5:
                 pitches.append(dist)
                 
         if pitches:
             CHAR_PITCH = np.median(pitches)
         else:
             CHAR_PITCH = median_nn * 2.5
-        
-        base_ref = cells[0][0][0]
-        offsets = []
-        for c in cells:
-            dist = c[0][0] - base_ref
-            k = np.round(dist / CHAR_PITCH)
-            offsets.append(c[0][0] - k * CHAR_PITCH)
             
-        line_origin = np.median(offsets)
-        slots = {}
+        # 2. Group cells into WORDS to handle proportional font tracking/kerning gaps
+        words = []
+        current_word = [cells[0]]
+        for i in range(1, len(cells)):
+            dist = cells[i][0][0] - cells[i-1][0][0]
+            # If distance is unusually large, it's a word gap
+            if dist > CHAR_PITCH * 1.5:
+                words.append(current_word)
+                current_word = [cells[i]]
+            else:
+                current_word.append(cells[i])
+        words.append(current_word)
         
-        for dot in line_dots:
-            dx = dot[0] - line_origin
-            slot_idx = int(np.floor((dx + median_nn * 0.5) / CHAR_PITCH))
-            
-            if slot_idx < 0:
-                slot_idx = 0
+        # 3. Process each word independently
+        for word_cells in words:
+            # Reconstruct the exact localized phase for THIS word only
+            base_ref = word_cells[0][0][0]
+            offsets = []
+            for c in word_cells:
+                dist = c[0][0] - base_ref
+                k = np.round(dist / CHAR_PITCH)
+                offsets.append(c[0][0] - k * CHAR_PITCH)
                 
-            if slot_idx not in slots:
-                slots[slot_idx] = []
-            slots[slot_idx].append(dot)
+            word_origin = np.median(offsets)
             
-        if not slots:
-            braille_output.append(" ")
-            continue
-            
-        max_slot = max(slots.keys())
-        
-        # 5. Extract 6-Bit Pattern per Slot
-        for curr_slot in range(max_slot + 1):
-            if curr_slot not in slots:
-                braille_output.append("⠀")
+            # Map dots to slots in this word
+            slots = {}
+            for c in word_cells:
+                for dot in c:
+                    dx = dot[0] - word_origin
+                    slot_idx = int(np.floor((dx + median_nn * 0.5) / CHAR_PITCH))
+                    if slot_idx < 0:
+                        slot_idx = 0
+                    if slot_idx not in slots:
+                        slots[slot_idx] = []
+                    slots[slot_idx].append(dot)
+                    
+            if not slots:
                 continue
                 
-            cell_dots = slots[curr_slot]
-            pattern = [0]*6
+            max_slot = max(slots.keys())
             
-            slot_origin_x = line_origin + (curr_slot * CHAR_PITCH)
-            x_mid = slot_origin_x + (median_nn * 0.5)
-            
-            for (cx, cy) in cell_dots:
-                col = 0 if cx <= x_mid else 1
-                if cy < y_top_thresh:     row = 0
-                elif cy < y_mid_thresh:   row = 1
-                else:                     row = 2
+            # Extract 6-Bit Pattern per Slot
+            for curr_slot in range(max_slot + 1):
+                if curr_slot not in slots:
+                    braille_output.append("⠀")
+                    continue
                     
-                if row == 0 and col == 0:   pattern[0] = 1
-                elif row == 1 and col == 0: pattern[1] = 1
-                elif row == 2 and col == 0: pattern[2] = 1
-                elif row == 0 and col == 1: pattern[3] = 1
-                elif row == 1 and col == 1: pattern[4] = 1
-                elif row == 2 and col == 1: pattern[5] = 1
+                cell_dots = slots[curr_slot]
+                pattern = [0]*6
                 
-            value = sum([bit << k for k, bit in enumerate(pattern)])
-            braille_output.append(chr(0x2800 + value))
+                slot_origin_x = word_origin + (curr_slot * CHAR_PITCH)
+                x_mid = slot_origin_x + (median_nn * 0.5)
+                
+                for (cx, cy) in cell_dots:
+                    col = 0 if cx <= x_mid else 1
+                    if cy < y_top_thresh:     row = 0
+                    elif cy < y_mid_thresh:   row = 1
+                    else:                     row = 2
+                        
+                    if row == 0 and col == 0:   pattern[0] = 1
+                    elif row == 1 and col == 0: pattern[1] = 1
+                    elif row == 2 and col == 0: pattern[2] = 1
+                    elif row == 0 and col == 1: pattern[3] = 1
+                    elif row == 1 and col == 1: pattern[4] = 1
+                    elif row == 2 and col == 1: pattern[5] = 1
+                    
+                value = sum([bit << k for k, bit in enumerate(pattern)])
+                braille_output.append(chr(0x2800 + value))
+                
+            # Add space after each word
+            braille_output.append(" ")
             
+        # Add space after the entire line
         braille_output.append(" ") 
         
-    braille_text = "".join(braille_output).replace("  ", " ").strip()
+    # Process space collapsing to make it one flowing paragraph
+    import re
+    raw_text = "".join(braille_output)
+    braille_text = re.sub(r'\s+', ' ', raw_text).strip()
     
     # Translate natively to English
     if not braille_text:

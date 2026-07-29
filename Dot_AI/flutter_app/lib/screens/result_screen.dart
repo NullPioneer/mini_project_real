@@ -3,25 +3,24 @@
 //  Shows extracted Braille text, audio playback, and chat link
 // =============================================================
 
-import 'dart:convert';
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
-import '../widgets/gradient_button.dart';
 import '../widgets/dot_loader.dart';
 import 'chat_screen.dart';
 
 class ResultScreen extends StatefulWidget {
-  final String extractedText;   // Text from Braille processing
-  final File imageFile;         // Original image file
+  final List<Map<String, dynamic>> results;
 
   const ResultScreen({
     super.key,
-    required this.extractedText,
-    required this.imageFile,
+    required this.results,
   });
 
   @override
@@ -36,6 +35,7 @@ class _ResultScreenState extends State<ResultScreen>
   bool _isLoadingAudio = false;  // True while fetching audio from backend
   bool _isPlaying = false;       // True while audio is playing
   String? _audioError;           // Audio-related error message
+  int _currentIndex = 0;         // Current result index
 
   late AnimationController _slideController;
   late Animation<Offset> _slideAnimation;
@@ -87,7 +87,8 @@ class _ResultScreenState extends State<ResultScreen>
     });
 
     // Call TTS API
-    final result = await ApiService.textToSpeech(text: widget.extractedText);
+    final currentText = widget.results[_currentIndex]['text'] as String;
+    final result = await ApiService.textToSpeech(text: currentText);
 
     setState(() => _isLoadingAudio = false);
 
@@ -116,31 +117,24 @@ class _ResultScreenState extends State<ResultScreen>
 
   // --- Navigate to Chat Screen ---
   void _goToChat() {
+    final currentText = widget.results[_currentIndex]['text'] as String;
     Navigator.push(
       context,
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => ChatScreen(
-          extractedText: widget.extractedText,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          extractedText: currentText,
         ),
-        transitionsBuilder: (_, animation, __, child) {
-          return SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(1.0, 0.0),
-              end: Offset.zero,
-            ).animate(CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutCubic,
-            )),
-            child: child,
-          );
-        },
-        transitionDuration: const Duration(milliseconds: 400),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    if (widget.results.isEmpty) return const Scaffold(backgroundColor: AppTheme.backgroundDark);
+
+    final currentText = widget.results[_currentIndex]['text'] as String;
+    final currentFile = widget.results[_currentIndex]['file'] as File;
+
     return Scaffold(
       backgroundColor: AppTheme.backgroundDark,
       appBar: _buildAppBar(),
@@ -152,13 +146,37 @@ class _ResultScreenState extends State<ResultScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Pagination controls
+              if (widget.results.length > 1) _buildPagination(),
+              if (widget.results.length > 1) const SizedBox(height: 20),
+
+              // Image display to clarify WHICH image is processing
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  width: double.infinity,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceLight,
+                    border: Border.all(color: AppTheme.accentNeon.withValues(alpha: 0.3)),
+                  ),
+                  child: currentFile.path.toLowerCase().endsWith('.pdf')
+                    ? const Icon(Icons.picture_as_pdf, color: AppTheme.accentNeon, size: 48)
+                    : (kIsWeb 
+                        ? Image.network(currentFile.path, fit: BoxFit.cover)
+                        : Image.file(currentFile, fit: BoxFit.cover)),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
               // Success badge
-              _buildSuccessBadge(),
+              _buildSuccessBadge(currentText),
 
               const SizedBox(height: 24),
 
               // Extracted text card
-              _buildTextCard(),
+              _buildTextCard(currentText),
 
               const SizedBox(height: 24),
 
@@ -173,10 +191,14 @@ class _ResultScreenState extends State<ResultScreen>
               const SizedBox(height: 24),
 
               // Ask Questions button
-              GradientButton(
-                label: 'Ask Questions',
-                icon: Icons.chat_bubble_rounded,
-                onPressed: _goToChat,
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton.icon(
+                  onPressed: _goToChat,
+                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                  label: const Text('Ask AI Custom Questions'),
+                ),
               ),
 
               const SizedBox(height: 16),
@@ -184,7 +206,7 @@ class _ResultScreenState extends State<ResultScreen>
               // Back button
               SizedBox(
                 width: double.infinity,
-                height: 54,
+                height: 52,
                 child: OutlinedButton.icon(
                   onPressed: () => Navigator.pop(context),
                   icon: const Icon(Icons.arrow_back_rounded, size: 18),
@@ -192,7 +214,7 @@ class _ResultScreenState extends State<ResultScreen>
                 ),
               ),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 48),
             ],
           ),
         ),
@@ -202,49 +224,77 @@ class _ResultScreenState extends State<ResultScreen>
 
   AppBar _buildAppBar() {
     return AppBar(
-      title: const Text('Extraction Result'),
+      title: Text(widget.results.length > 1 ? 'Extraction Results' : 'Extraction Result'),
       backgroundColor: AppTheme.backgroundDark,
       leading: IconButton(
-        icon: const Icon(Icons.arrow_back_ios_rounded,
-            color: AppTheme.textPrimary),
+        icon: const Icon(Icons.arrow_back_ios_new_rounded,
+            color: AppTheme.textPrimary, size: 18),
         onPressed: () => Navigator.pop(context),
       ),
-      actions: [
+    );
+  }
+
+  Widget _buildPagination() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
         IconButton(
-          icon: const Icon(Icons.share_rounded, color: AppTheme.textSecondary),
-          onPressed: () {
-            // TODO: Implement share functionality
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Share coming soon!')),
-            );
-          },
+          onPressed: _currentIndex > 0
+              ? () {
+                  if (_isPlaying) _audioPlayer.stop();
+                  setState(() => _currentIndex--);
+                }
+              : null,
+          icon: Icon(Icons.arrow_back_ios_rounded, color: _currentIndex > 0 ? AppTheme.accentNeon : AppTheme.surfaceLight),
+        ),
+        Text(
+          'Document ${_currentIndex + 1} of ${widget.results.length}',
+          style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        IconButton(
+          onPressed: _currentIndex < widget.results.length - 1
+              ? () {
+                  if (_isPlaying) _audioPlayer.stop();
+                  setState(() => _currentIndex++);
+                }
+              : null,
+          icon: Icon(Icons.arrow_forward_ios_rounded, color: _currentIndex < widget.results.length - 1 ? AppTheme.accentNeon : AppTheme.surfaceLight),
         ),
       ],
     );
   }
 
-  Widget _buildSuccessBadge() {
+  Widget _buildSuccessBadge(String currentText) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: AppTheme.successColor.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(20),
+        color: AppTheme.surfaceDark,
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: AppTheme.successColor.withOpacity(0.3),
+          color: AppTheme.accentNeon,
+          width: 0.8,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.accentNeon.withValues(alpha: 0.2),
+            blurRadius: 12,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.check_circle_rounded,
-              color: AppTheme.successColor, size: 16),
+          const Icon(Icons.check_circle_outline_rounded,
+              color: AppTheme.accentNeon, size: 16),
           const SizedBox(width: 8),
           Text(
-            '${widget.extractedText.split(' ').length} words extracted',
+            '${currentText.split(' ').length} words extracted',
             style: const TextStyle(
-              color: AppTheme.successColor,
+              color: AppTheme.accentNeon,
               fontSize: 13,
               fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
             ),
           ),
         ],
@@ -252,16 +302,24 @@ class _ResultScreenState extends State<ResultScreen>
     );
   }
 
-  Widget _buildTextCard() {
+  Widget _buildTextCard(String currentText) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppTheme.surfaceDark,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: AppTheme.primaryColor.withOpacity(0.2),
+          color: AppTheme.accentNeon.withValues(alpha: 0.5),
+          width: 1,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.accentNeon.withValues(alpha: 0.15),
+            blurRadius: 20,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -272,20 +330,21 @@ class _ResultScreenState extends State<ResultScreen>
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: AppTheme.primaryColor.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(10),
+                  color: AppTheme.accentNeon.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.accentNeon, width: 1),
                 ),
                 child: const Icon(
-                  Icons.text_snippet_rounded,
-                  color: AppTheme.primaryLight,
+                  Icons.text_snippet_outlined,
+                  color: AppTheme.accentNeon,
                   size: 18,
                 ),
               ),
               const SizedBox(width: 10),
               const Text(
-                'Extracted Braille Text',
+                'Extracted Text',
                 style: TextStyle(
-                  fontSize: 15,
+                  fontSize: 14,
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary,
                 ),
@@ -293,22 +352,43 @@ class _ResultScreenState extends State<ResultScreen>
               const Spacer(),
               // Character count badge
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: AppTheme.surfaceLight,
-                  borderRadius: BorderRadius.circular(8),
+                  color: AppTheme.accentNeon.withValues(alpha: 0.1),
+                  border: Border.all(color: AppTheme.accentNeon.withValues(alpha: 0.5)),
+                  borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  '${widget.extractedText.length} chars',
+                  '${currentText.length} chars',
                   style: const TextStyle(
-                    color: AppTheme.textSecondary,
+                    color: AppTheme.accentNeon,
                     fontSize: 11,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.copy_rounded, color: AppTheme.textSecondary, size: 20),
+                tooltip: 'Copy text',
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: currentText));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: const Text('Text copied to clipboard', style: TextStyle(color: Colors.white)),
+                      backgroundColor: AppTheme.surfaceLight,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                },
               ),
             ],
           ),
 
+          const SizedBox(height: 16),
+          const Divider(color: AppTheme.surfaceLight, height: 1),
           const SizedBox(height: 16),
 
           // Scrollable text area
@@ -317,12 +397,12 @@ class _ResultScreenState extends State<ResultScreen>
             child: SingleChildScrollView(
               physics: const BouncingScrollPhysics(),
               child: SelectableText(
-                widget.extractedText,
+                currentText,
                 style: const TextStyle(
-                  color: AppTheme.textPrimary,
-                  fontSize: 15,
+                  color: Colors.white,
+                  fontSize: 16,
                   height: 1.7,
-                  letterSpacing: 0.2,
+                  letterSpacing: 0.3,
                 ),
               ),
             ),
@@ -335,32 +415,26 @@ class _ResultScreenState extends State<ResultScreen>
   Widget _buildAudioCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            AppTheme.accentColor.withOpacity(0.1),
-            AppTheme.primaryColor.withOpacity(0.05),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(20),
+        color: AppTheme.surfaceDark,
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: AppTheme.accentColor.withOpacity(0.2),
+          color: AppTheme.surfaceLight,
         ),
       ),
       child: Row(
         children: [
           // Waveform icon / play indicator
           Container(
-            width: 52,
-            height: 52,
+            width: 48,
+            height: 48,
             decoration: BoxDecoration(
               color: _isPlaying
-                  ? AppTheme.accentColor.withOpacity(0.2)
-                  : AppTheme.surfaceDark,
-              shape: BoxShape.circle,
+                  ? AppTheme.accentNeon.withValues(alpha: 0.1)
+                  : AppTheme.surfaceLight,
+              borderRadius: BorderRadius.circular(8),
+              border: _isPlaying ? Border.all(color: AppTheme.accentNeon, width: 1.0) : null,
             ),
             child: _isLoadingAudio
                 ? const Padding(
@@ -372,9 +446,9 @@ class _ResultScreenState extends State<ResultScreen>
                         ? Icons.pause_rounded
                         : Icons.play_arrow_rounded,
                     color: _isPlaying
-                        ? AppTheme.accentColor
-                        : AppTheme.textSecondary,
-                    size: 28,
+                        ? AppTheme.accentNeon
+                        : AppTheme.primaryColor,
+                    size: 24,
                   ),
           ),
 
@@ -385,20 +459,20 @@ class _ResultScreenState extends State<ResultScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Listen to Text',
+                  'Audio Playback',
                   style: TextStyle(
                     color: AppTheme.textPrimary,
-                    fontSize: 15,
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 4),
                 Text(
                   _isPlaying
                       ? 'Playing audio...'
                       : _isLoadingAudio
                           ? 'Generating audio...'
-                          : 'Tap to hear the Braille text read aloud',
+                          : 'Listen to the extracted text',
                   style: const TextStyle(
                     color: AppTheme.textSecondary,
                     fontSize: 12,
@@ -414,14 +488,13 @@ class _ResultScreenState extends State<ResultScreen>
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
-                gradient: _isPlaying ? null : AppTheme.primaryGradient,
-                color: _isPlaying ? AppTheme.surfaceLight : null,
-                borderRadius: BorderRadius.circular(12),
+                color: _isPlaying ? AppTheme.surfaceLight : AppTheme.primaryColor,
+                borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
                 _isPlaying ? 'Stop' : 'Play',
                 style: TextStyle(
-                  color: _isPlaying ? AppTheme.textSecondary : Colors.white,
+                  color: _isPlaying ? AppTheme.textSecondary : Colors.black,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
@@ -435,22 +508,22 @@ class _ResultScreenState extends State<ResultScreen>
 
   Widget _buildErrorCard(String error) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppTheme.errorColor.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.errorColor.withOpacity(0.3)),
+        color: AppTheme.surfaceDark,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.errorColor, width: 0.5),
       ),
       child: Row(
         children: [
           const Icon(Icons.error_outline_rounded,
-              color: AppTheme.errorColor, size: 18),
+              color: AppTheme.errorColor, size: 16),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               error,
               style: const TextStyle(
-                  color: AppTheme.errorColor, fontSize: 12),
+                  color: AppTheme.textPrimary, fontSize: 12),
             ),
           ),
         ],

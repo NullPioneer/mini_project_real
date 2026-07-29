@@ -29,16 +29,16 @@ class GradientButton extends StatelessWidget {
         width: double.infinity,
         height: 58,
         decoration: BoxDecoration(
-          gradient: isDisabled ? null : AppTheme.primaryGradient,
+          gradient: isDisabled ? null : AppTheme.neonGradient,
           color: isDisabled ? AppTheme.surfaceLight : null,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(12),
           boxShadow: isDisabled
               ? null
               : [
                   BoxShadow(
-                    color: AppTheme.primaryColor.withOpacity(0.4),
-                    blurRadius: 20,
-                    offset: const Offset(0, 6),
+                    color: AppTheme.accentNeon.withValues(alpha: 0.4),
+                    blurRadius: 15,
+                    offset: const Offset(0, 4),
                   ),
                 ],
         ),
@@ -56,9 +56,9 @@ class GradientButton extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                color: isDisabled ? AppTheme.textSecondary : Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
+                color: isDisabled ? AppTheme.textSecondary : Colors.black,
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
                 letterSpacing: 0.3,
               ),
             ),

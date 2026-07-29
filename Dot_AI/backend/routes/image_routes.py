@@ -1,18 +1,20 @@
 """
 Image Processing Routes
 ========================
-Handles Braille image upload and text extraction.
+Handles Braille image and PDF upload and text extraction.
 
 Endpoint: POST /api/process-image
-Input:    Multipart image file
-Output:   Extracted text from Braille
+Input:    Multiple image files or a PDF file
+Output:   Extracted text from Braille concatenated from all pages/images
 """
 
 from fastapi import APIRouter, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from typing import List
 import numpy as np
 import cv2
 import io
+import fitz  # PyMuPDF
 from PIL import Image
 from services.braille_service import BrailleProcessor
 
@@ -23,58 +25,88 @@ braille_processor = BrailleProcessor()
 
 
 @router.post("/process-image")
-async def process_braille_image(file: UploadFile = File(...)):
+async def process_braille_images(files: List[UploadFile] = File(...)):
     """
-    Process a Braille image and return extracted text.
+    Process multiple Braille images or a PDF and return extracted text.
     
     Steps:
-    1. Validate uploaded file
-    2. Preprocess image (grayscale, threshold, denoise)
-    3. Segment Braille cells (call segmentation module)
-    4. Predict characters using CNN model
-    5. Combine into readable text
+    1. Validate uploaded files
+    2. Convert PDFs to images using PyMuPDF
+    3. Pass images to Braille processor pipeline
+    4. Combine all extracted text into readable text
     """
     
-    # --- Validate file type ---
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid file type. Please upload an image (JPG, PNG, etc.)"
-        )
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+        
+    extracted_texts = []
     
     try:
-        # --- Read uploaded image ---
-        image_bytes = await file.read()
+        for file in files:
+            file_bytes = await file.read()
+            if len(file_bytes) == 0:
+                continue
+                
+            # --- Check if the file is a PDF ---
+            if file.content_type == "application/pdf":
+                # Convert PDF pages to images
+                pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+                for page_num in range(len(pdf_document)):
+                    page = pdf_document.load_page(page_num)
+                    # Use a relatively high DPI (default is 72) for better OCR accuracy
+                    pix = page.get_pixmap(dpi=300)
+                    
+                    # Convert fitz pixmap to PIL Image
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    
+                    # Convert PIL Image to OpenCV format (BGR)
+                    np_img = np.array(img)
+                    image = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
+                    
+                    # Process image through Braille pipeline
+                    text = braille_processor.process(image)
+                    if text and text.strip():
+                        extracted_texts.append(text.strip())
+                        
+                pdf_document.close()
+                
+            else:
+                try:
+                    # Use PIL to safely open all web/mobile image formats
+                    pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGBA")
+                    image_np = np.array(pil_img)
+                    
+                    # Convert transparent background to white
+                    alpha = image_np[:, :, 3] / 255.0
+                    bg = np.ones_like(image_np[:, :, :3], dtype=np.uint8) * 255
+                    image_rgb = (image_np[:, :, :3] * alpha[:, :, np.newaxis] + bg * (1 - alpha[:, :, np.newaxis])).astype(np.uint8)
+                    
+                    # Convert RGB to BGR for OpenCV processing
+                    image = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+                except Exception as e:
+                    print(f"Error loading image with PIL: {e}")
+                    raise HTTPException(status_code=400, detail="Invalid image file or format.")
+                # Process image through Braille pipeline
+                text = braille_processor.process(image)
+                if text and text.strip():
+                    extracted_texts.append(text.strip())
         
-        if len(image_bytes) == 0:
-            raise HTTPException(status_code=400, detail="Empty image file uploaded")
+        # --- Combine all text ---
+        combined_text = "\n".join(extracted_texts).strip()
         
-        # Convert bytes to numpy array (OpenCV format)
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if image is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Could not read image. Please upload a valid image file."
-            )
-        
-        # --- Process image through Braille pipeline ---
-        extracted_text = braille_processor.process(image)
-        
-        if not extracted_text or extracted_text.strip() == "":
+        if not combined_text:
             return JSONResponse(content={
                 "success": True,
-                "text": "No Braille text could be detected in this image.",
+                "text": "No Braille text could be detected in these files.",
                 "confidence": 0.0,
                 "character_count": 0
             })
         
         return JSONResponse(content={
             "success": True,
-            "text": extracted_text,
+            "text": combined_text,
             "confidence": 0.95,  # Replace with real confidence from CNN
-            "character_count": len(extracted_text)
+            "character_count": len(combined_text)
         })
         
     except HTTPException:
@@ -82,5 +114,5 @@ async def process_braille_image(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Image processing failed: {str(e)}"
+            detail=f"Document processing failed: {str(e)}"
         )

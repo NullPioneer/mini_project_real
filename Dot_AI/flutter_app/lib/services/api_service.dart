@@ -15,8 +15,8 @@ import 'package:http_parser/http_parser.dart';
 const String kBaseUrl = 'http://127.0.0.1:8000/api';
 
 class ApiService {
-  // Timeout duration for API calls
-  static const Duration _timeout = Duration(seconds: 60);
+  // Timeout duration for API calls (extended heavily because local Llama 3 can be very slow to load/infer on CPU)
+  static const Duration _timeout = Duration(minutes: 10);
 
   // =====================================================
   // 1. PROCESS IMAGE → Extract Braille Text
@@ -26,25 +26,26 @@ class ApiService {
   ///
   /// [imageFile] - The image file selected/captured by the user
   /// Returns a map with 'text' and 'success' keys
-  static Future<Map<String, dynamic>> processImage(File imageFile) async {
+  static Future<Map<String, dynamic>> processImages(List<File> files) async {
     try {
       final uri = Uri.parse('$kBaseUrl/process-image');
 
       // Create multipart request (required for file uploads)
       final request = http.MultipartRequest('POST', uri);
 
-      // Determine file type from extension
-      final extension = imageFile.path.split('.').last.toLowerCase();
-      final mediaType = _getMediaType(extension);
+      // Attach all files to request
+      for (var file in files) {
+        final extension = file.path.split('.').last.toLowerCase();
+        final mediaType = _getMediaType(extension);
 
-      // Attach image file to request
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'file', // Must match FastAPI parameter name
-          imageFile.path,
-          contentType: mediaType,
-        ),
-      );
+        request.files.add(
+          await http.MultipartFile.fromPath(
+            'files', // Must match FastAPI parameter name
+            file.path,
+            contentType: mediaType,
+          ),
+        );
+      }
 
       // Send request with timeout
       final streamedResponse = await request.send().timeout(_timeout);
@@ -192,6 +193,9 @@ class ApiService {
   // =====================================================
 
   static MediaType _getMediaType(String extension) {
+    if (extension == 'pdf') {
+      return MediaType('application', 'pdf');
+    }
     switch (extension) {
       case 'jpg':
       case 'jpeg':
@@ -203,7 +207,7 @@ class ApiService {
       case 'bmp':
         return MediaType('image', 'bmp');
       default:
-        return MediaType('image', 'jpeg');
+        return MediaType('application', 'octet-stream');
     }
   }
 }

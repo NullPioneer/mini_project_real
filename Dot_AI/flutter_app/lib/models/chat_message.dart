@@ -33,6 +33,24 @@ class ChatMessage {
     };
   }
 
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'content': content,
+      'role': role.name,
+      'timestamp': timestamp.toIso8601String(),
+    };
+  }
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    return ChatMessage(
+      id: json['id'],
+      content: json['content'],
+      role: MessageRole.values.firstWhere((e) => e.name == json['role']),
+      timestamp: DateTime.parse(json['timestamp']),
+    );
+  }
+
   /// Create a copy with modified fields
   ChatMessage copyWith({
     String? content,

@@ -29,38 +29,17 @@ class OllamaService:
     
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
-        model_name: str = "tinyllama"  # Utilizing extremely small model (640MB)
+        base_url: str = "http://127.0.0.1:11434",
+        model_name: str = "llama3"  # Upgraded to Llama 3 for much higher reasoning capability
     ):
         self.base_url = base_url
         self.model_name = model_name
-        self.timeout = 60.0  # 60 second timeout for LLM responses
+        self.timeout = 300.0  # 300 second timeout for LLM responses (model loading can be slow)
         
         print(f"✅ OllamaService initialized (model: {model_name})")
     
-    def _build_system_prompt(self, context: str) -> str:
-        """
-        Build a context-aware system prompt.
-        
-        This ensures the LLM ONLY answers based on the extracted Braille text,
-        not from its general training knowledge.
-        """
-        return f"""You are Dot_AI, an intelligent Braille reading assistant.
-
-Your ONLY job is to answer questions based on the following Braille text that was extracted from an image:
-
---- EXTRACTED BRAILLE TEXT START ---
-{context}
---- EXTRACTED BRAILLE TEXT END ---
-
-STRICT RULES:
-1. ONLY answer questions based on the text above.
-2. If the question cannot be answered from the text, say: "I cannot find that information in the Braille text."
-3. Be clear, concise, and helpful.
-4. If asked to summarize, provide a brief summary of the extracted text.
-5. Do NOT use information from outside the provided text.
-6. Respond in a friendly, accessible tone suitable for visually impaired users.
-"""
+    # System prompts are often ignored or hallucinated by TinyLlama.
+    # We will pass context directly in the user message instead.
     
     async def generate_answer(
         self,
@@ -81,24 +60,33 @@ STRICT RULES:
         """
         
         # Build conversation messages
-        messages = []
-        
-        # Add system prompt with Braille context
-        messages.append({
-            "role": "system",
-            "content": self._build_system_prompt(context)
-        })
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful, knowledgeable assistant. The user has provided text that was OCR'd from a Braille document.\n"
+                    f"EXTRACTED CONTENT: '{context}'\n\n"
+                    "RULES:\n"
+                    "1. The primary focus of the conversation is the EXTRACTED CONTENT.\n"
+                    "2. You MUST use your general knowledge to explain, summarize, define, or expand upon the concepts or words found in the extracted text when the user asks.\n"
+                    "3. If the extracted text contains typos or noise (e.g. random letters like 'U B R A I L L E T X' when it clearly means 'Braille'), intuitively infer the correct meaning and focus on that.\n"
+                    "4. Provide clear, conversational, and direct answers without robotic over-explanations of individual characters."
+                )
+            }
+        ]
         
         # Add conversation history (if any)
         if history:
             for msg in history[-10:]:  # Keep last 10 messages for context window
                 if msg.get("role") in ["user", "assistant"]:
-                    messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
+                    # Scrub out hallucinated tags that might be in history
+                    clean_content = msg["content"].replace("User:", "").replace("AI:", "").replace("Assistant:", "").strip()
+                    if clean_content:
+                        messages.append({
+                            "role": msg["role"],
+                            "content": clean_content
+                        })
         
-        # Add current question
         messages.append({
             "role": "user",
             "content": question
@@ -134,15 +122,9 @@ STRICT RULES:
                 
                 return answer.strip()
                 
-        except httpx.ConnectError:
+        except Exception as e:
             raise ConnectionError(
-                "Cannot connect to Ollama. "
-                "Please ensure Ollama is running: 'ollama serve'"
-            )
-        except httpx.TimeoutException:
-            raise TimeoutError(
-                "Ollama took too long to respond. "
-                "Try a smaller model or check your hardware."
+                f"Cannot connect to Ollama. Please ensure Ollama is running: 'ollama serve' \n Details: {str(e)}"
             )
     
     async def list_models(self) -> List[str]:

@@ -61,7 +61,7 @@ class _DotLoaderState extends State<DotLoader>
               width: widget.size,
               height: widget.size,
               decoration: BoxDecoration(
-                color: dotColor.withOpacity(opacity),
+                color: dotColor.withValues(alpha: opacity),
                 shape: BoxShape.circle,
               ),
             );
